@@ -1,0 +1,168 @@
+services:
+  proxy:
+    image: ${IMAGE_PREFIX}/proxy:${IMAGE_TAG}
+    ports:
+    - 8080:80
+    networks:
+    - web
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        order: stop-first
+  frontend:
+    image: ${IMAGE_PREFIX}/frontend:${IMAGE_TAG}
+    networks:
+    - web
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        order: stop-first
+  api:
+    image: ${IMAGE_PREFIX}/api:${IMAGE_TAG}
+    networks:
+    - web
+    - control
+    environment:
+      API_TOKEN_FILE: /run/secrets/api_token
+      REDIS_URL: redis://redis:6379/0
+    secrets:
+    - api_token
+    volumes:
+    - restores:/restores:ro
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        order: stop-first
+      placement:
+        constraints:
+        - node.labels.backup.storage == true
+  worker:
+    image: ${IMAGE_PREFIX}/worker:${IMAGE_TAG}
+    networks:
+    - control
+    - storage
+    environment:
+      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
+      RESTIC_REPOSITORY: rest:http://repository:8000/corporate/
+      BACKUP_INTERVAL_SECONDS: '3600'
+    secrets:
+    - restic_password
+    volumes:
+    - source:/source:ro
+    - restores:/restores
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        order: stop-first
+      placement:
+        constraints:
+        - node.labels.backup.storage == true
+  source:
+    image: ${IMAGE_PREFIX}/source:${IMAGE_TAG}
+    volumes:
+    - source:/source
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        order: stop-first
+      placement:
+        constraints:
+        - node.labels.backup.storage == true
+    networks:
+    - control
+  redis:
+    image: redis:7.4-alpine
+    command:
+    - redis-server
+    - --appendonly
+    - 'yes'
+    - --appendfsync
+    - everysec
+    networks:
+    - control
+    volumes:
+    - redis:/data
+    healthcheck:
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        order: stop-first
+      placement:
+        constraints:
+        - node.labels.backup.storage == true
+  repository:
+    image: restic/rest-server:0.14.0
+    environment:
+      DISABLE_AUTHENTICATION: 'true'
+    networks:
+    - storage
+    volumes:
+    - repository:/data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        order: stop-first
+      placement:
+        constraints:
+        - node.labels.backup.storage == true
+networks:
+  web:
+    driver: overlay
+  control:
+    internal: true
+    driver: overlay
+    driver_opts:
+      encrypted: 'true'
+  storage:
+    internal: true
+    driver: overlay
+    driver_opts:
+      encrypted: 'true'
+volumes:
+  source: {}
+  restores: {}
+  redis: {}
+  repository: {}
+secrets:
+  api_token:
+    external: true
+    name: backup_api_token
+  restic_password:
+    external: true
+    name: backup_restic_password
+version: '3.8'

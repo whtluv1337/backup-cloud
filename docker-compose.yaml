@@ -1,0 +1,115 @@
+name: backupcloud
+services:
+  proxy:
+    image: backupcloud/proxy:local
+    build:
+      context: .
+      dockerfile: docker/proxy.Dockerfile
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:8080:80
+    networks:
+    - web
+    depends_on:
+    - api
+    - frontend
+  frontend:
+    image: backupcloud/frontend:local
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    restart: unless-stopped
+    networks:
+    - web
+  api:
+    image: backupcloud/api:local
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    networks:
+    - web
+    - control
+    environment:
+      API_TOKEN_FILE: /run/secrets/api_token
+      REDIS_URL: redis://redis:6379/0
+    secrets:
+    - api_token
+    volumes:
+    - restores:/restores:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+  worker:
+    image: backupcloud/worker:local
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    restart: unless-stopped
+    networks:
+    - control
+    - storage
+    environment:
+      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
+      RESTIC_REPOSITORY: rest:http://repository:8000/corporate/
+      BACKUP_INTERVAL_SECONDS: '3600'
+    secrets:
+    - restic_password
+    volumes:
+    - source:/source:ro
+    - restores:/restores
+  source:
+    image: backupcloud/source:local
+    build:
+      context: .
+      dockerfile: docker/source.Dockerfile
+    restart: unless-stopped
+    network_mode: none
+    volumes:
+    - source:/source
+  redis:
+    image: redis:7.4-alpine
+    command:
+    - redis-server
+    - --appendonly
+    - 'yes'
+    - --appendfsync
+    - everysec
+    restart: unless-stopped
+    networks:
+    - control
+    volumes:
+    - redis:/data
+    healthcheck:
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  repository:
+    image: restic/rest-server:0.14.0
+    environment:
+      DISABLE_AUTHENTICATION: 'true'
+    restart: unless-stopped
+    networks:
+    - storage
+    volumes:
+    - repository:/data
+networks:
+  web: {}
+  control:
+    internal: true
+  storage:
+    internal: true
+volumes:
+  source: {}
+  restores: {}
+  redis: {}
+  repository: {}
+secrets:
+  api_token:
+    file: ./secrets/api_token.txt
+  restic_password:
+    file: ./secrets/restic_password.txt

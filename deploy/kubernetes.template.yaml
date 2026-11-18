@@ -1,0 +1,447 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backupcloud
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: source
+  namespace: backupcloud
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: restores
+  namespace: backupcloud
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis
+  namespace: backupcloud
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: repository
+  namespace: backupcloud
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: backupcloud
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: proxy
+  template:
+    metadata:
+      labels:
+        app: proxy
+    spec:
+      containers:
+      - name: proxy
+        image: IMAGE_PREFIX/proxy:IMAGE_TAG
+        env: []
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: backupcloud
+spec:
+  selector:
+    app: proxy
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: backupcloud
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: IMAGE_PREFIX/frontend:IMAGE_TAG
+        env: []
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: backupcloud
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: backupcloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: IMAGE_PREFIX/api:IMAGE_TAG
+        env:
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: backup-secrets
+              key: api_token
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        volumeMounts:
+        - name: restores
+          mountPath: /restores
+          readOnly: true
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: restores
+        persistentVolumeClaim:
+          claimName: restores
+      nodeSelector:
+        backup.storage: 'true'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: backupcloud
+spec:
+  selector:
+    app: api
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: backupcloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+      - name: worker
+        image: IMAGE_PREFIX/worker:IMAGE_TAG
+        env:
+        - name: RESTIC_REPOSITORY
+          value: rest:http://repository:8000/corporate/
+        - name: BACKUP_INTERVAL_SECONDS
+          value: '3600'
+        - name: RESTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: backup-secrets
+              key: restic_password
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        volumeMounts:
+        - name: source
+          mountPath: /source
+          readOnly: true
+        - name: restores
+          mountPath: /restores
+          readOnly: false
+      volumes:
+      - name: source
+        persistentVolumeClaim:
+          claimName: source
+      - name: restores
+        persistentVolumeClaim:
+          claimName: restores
+      nodeSelector:
+        backup.storage: 'true'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: source
+  namespace: backupcloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: source
+  template:
+    metadata:
+      labels:
+        app: source
+    spec:
+      containers:
+      - name: source
+        image: IMAGE_PREFIX/source:IMAGE_TAG
+        env: []
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        volumeMounts:
+        - name: source
+          mountPath: /source
+          readOnly: false
+      volumes:
+      - name: source
+        persistentVolumeClaim:
+          claimName: source
+      nodeSelector:
+        backup.storage: 'true'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: backupcloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.4-alpine
+        env: []
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        args:
+        - --appendonly
+        - 'yes'
+        - --appendfsync
+        - everysec
+        volumeMounts:
+        - name: redis
+          mountPath: /data
+          readOnly: false
+        ports:
+        - containerPort: 6379
+      volumes:
+      - name: redis
+        persistentVolumeClaim:
+          claimName: redis
+      nodeSelector:
+        backup.storage: 'true'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: backupcloud
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: repository
+  namespace: backupcloud
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: repository
+  template:
+    metadata:
+      labels:
+        app: repository
+    spec:
+      containers:
+      - name: repository
+        image: restic/rest-server:0.14.0
+        env:
+        - name: DISABLE_AUTHENTICATION
+          value: 'true'
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        volumeMounts:
+        - name: repository
+          mountPath: /data
+          readOnly: false
+        ports:
+        - containerPort: 8000
+      volumes:
+      - name: repository
+        persistentVolumeClaim:
+          claimName: repository
+      nodeSelector:
+        backup.storage: 'true'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: repository
+  namespace: backupcloud
+spec:
+  selector:
+    app: repository
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: repository-ingress
+  namespace: backupcloud
+spec:
+  podSelector:
+    matchLabels:
+      app: repository
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: worker
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-ingress
+  namespace: backupcloud
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api
+    - podSelector:
+        matchLabels:
+          app: worker

@@ -1,0 +1,4 @@
+-r requirements.txt
+fakeredis==2.40.0
+requests==2.34.2
+PyYAML==6.0.3

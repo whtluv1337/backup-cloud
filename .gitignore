@@ -1,0 +1,10 @@
+.env
+secrets/
+__pycache__/
+*.pyc
+evidence/
+.venv/
+
+.work/
+
+deploy/*.generated.yaml
